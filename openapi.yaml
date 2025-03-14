@@ -1,0 +1,653 @@
+openapi: 3.0.0
+info:
+  title: Library API
+  description: |
+   
+    ### **1. Functional requirements**
+    - Users should be able to register and log in
+    - The system supports three roles: Librarian, Member
+    - Librarian can manage users (update, delete)
+    - Librarians can add, update, and delete books
+    - Members can search for books by title, author, or category
+    - Users can borrow available books and return them before the due date
+    - Overdue books incur fines, which users must pay before borrowing again
+
+
+    ### **2. Non-Functional Requirements**
+    - **Performance:** The API should handle multiple users simultaneously
+    - **Scalability:** Supports an increasing number of books and users
+    - **Security:** Implements authentication (JWT) and role-based authorization
+    - **Availability:** The system should maintain 99.9% uptime.
+    - **Maintainability:** The API should be modular and allow future extensions.
+    - **Logging & Monitoring:** Tracks API requests, failed logins, and book transactions.
+    
+    ### **3. Authentication & Authorization**
+    - **Authentication:**
+    
+    - JWT-based authentication should be used to ensure secure login and API access.
+    - The JWT should be valid for a defined period (e.g., 1 hour) and should be refreshed periodically.
+    - Users must provide their credentials (username and password) to receive an authentication token.
+  
+    - **Authorization:**
+    - Based on the role (Librarian, Member), the system will determine the actions a user is authorized to perform.
+    - Librarians will have full access to manage users and books, while Members can only search, borrow, and return books.
+    - Unauthorized users (without valid JWT tokens or incorrect roles) will receive a 401 Unauthorized response.
+
+    ### **4. Error Handling & Status Codes**
+    - **200 OK:** Returned when the request is successful, and the server returns the expected result. For example, when a user successfully searches for books or a Librarian successfully adds a book.
+    - **201 Created:** Returned when a new resource has been successfully created. For example, when a new book is added to the library.
+    - **400 Bad Request:** Returned when invalid parameters or request body are provided (e.g., missing required fields, incorrect data types).
+    - **401 Unauthorized:** Returned when the user does not provide a valid authentication token or the token is expired.
+    - **403 Forbidden:** Returned when a user tries to access a resource they are not authorized to access based on their role.
+    - **404 Not Found:** Returned when a resource is not found in the system.
+    - **409 Conflict:** Returned when there is a conflict in the request, such as when a user tries to borrow a book that is already borrowed.
+    
+
+    ### **5. API Rate Limiting & Caching**
+    - **Caching:** Frequently accessed data, such as book availability and user details, should be cached to improve performance and reduce database load. Redis can be used as the caching solution.
+      - Cache invalidation should occur when book status is updated (borrowed, returned, etc.) or when user data changes.
+    - **Pagination:** 
+      - All endpoints that return large datasets (e.g., search results) should implement pagination, allowing users to specify limit and offset to control the number of items returned per page.
+
+  version: 1.0.0
+servers:
+  - url: https://api.library.com/v1
+    description: Production server
+  - url: http://localhost:5000
+    description: Local development server
+
+
+
+
+tags:
+  - name: auth
+    description: Operations related to user auth
+  - name: users
+    description: Operations related to user management
+  - name: book
+    description: Operations related to book management
+  - name: fine
+    description: Operations related to overdue fines
+paths:
+  /auth/register:
+    post:
+      summary: Register a new user
+      tags: [auth]
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/User'
+      responses:
+        '201':
+          description: User successfully registered
+        '400':
+          description: Bad request (invalid input data)
+        '409':
+          description: Conflict (user already exists)  
+  /auth/login:
+    post:
+      summary: User login
+      tags: [auth]
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Successfully logged in
+        '400':
+          description: Bad request (missing or invalid credentials)
+        '401':
+          description: Unauthorized (invalid email or password)
+          
+  /users/profile:
+    get:
+      summary: Get user profile
+      tags: [users]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: username
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: The ID of the user whose profile is being retrieved
+      responses:
+        '200':
+          description: User profile retrieved successfully
+        '401':
+          description: Unauthorized (invalid or missing token)
+    put:
+      summary: Update user profile
+      tags: [users]  
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: username
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: The ID of the user whose profile is being updated
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/User'
+      responses:
+        '200':
+          description: User profile updated successfully
+        '400':
+          description: Bad request (invalid input data)
+        '401':
+          description: Unauthorized (invalid or missing token)
+        '409':
+          description: Conflict (email already in use)
+    delete:
+      summary: Delete user account
+      tags: [users]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: username
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: The ID of the user whose account is being deleted
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+            description: Confirmation flag to prevent accidental deletion
+      responses:
+        '200':
+          description: User account deleted successfully
+        '400':
+          description: Bad request (missing confirmation parameter)
+        '401':
+          description: Unauthorized (invalid or missing token)
+        '403':
+          description: Forbidden (user has outstanding fines or borrowed books)
+
+  /books:
+    post:
+      summary: Add a new book 
+      tags: [book]
+      security:
+        - BearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Book'
+      responses:
+        201:
+          description: Book successfully added
+        403:
+          description: Forbidden (Librarians only)
+        409:
+          description: Conflict
+    get:
+      summary: Get a list of books
+      tags: [book]
+      description: Retrieves a paginated list of books.
+      operationId: getBooks
+      parameters:
+        - name: limit
+          in: query
+          description: Number of items per page.
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          description: The starting point for pagination (skip the first N items).
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: search
+          in: query
+          description: Search term to filter books by title or author.
+          required: false
+          schema:
+            type: string
+      responses:
+        200:
+          description: A paginated list of books.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count:
+                    type: integer
+                    description: The total number of books in the database.
+                  limit:
+                    type: integer
+                    description: Number of items per page.
+                  offset:
+                    type: integer
+                    description: The offset used for the pagination.
+                  books:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Book'
+              example:
+                total_count: 250
+                limit: 10
+                offset: 0
+                books:
+                  - book_id: 1
+                    title: "Foundation"
+                    author: "Isaac Asimov"
+                    category: "Science Fiction"
+                    status: "Available"
+                  - book_id: 2
+                    title: "1984"
+                    author: "George Orwell"
+                    category: "Dystopian"
+                    status: "Checked Out"
+        400:
+          description: Invalid request parameters (e.g., invalid limit or offset).
+
+  /books/{bookId}:
+    put:
+      summary: Update a book 
+      tags: [book]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          description: ID of the book to update
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Book'
+      responses:
+        200:
+          description: Book successfully updated
+        403:
+          description: Forbidden (Librarians only)
+        404:
+          $ref: '#/components/responses/NotFoundError'
+
+    delete:
+      summary: Delete a book
+      tags: [book]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          description: ID of the book to delete
+          schema:
+            type: integer
+      responses:
+        200:
+          description: Book successfully deleted
+        403:
+          description: Forbidden (Librarians only)
+        404:
+          $ref: '#/components/responses/NotFoundError'
+
+  /books/search:
+    get:
+      summary: Search for books by title, author, or category
+      tags: [book]
+      parameters:
+        - name: title
+          in: query
+          description: Book title to search for
+          required: false
+          schema:
+            type: string
+        - name: author
+          in: query
+          description: Author name to search for
+          required: false
+          schema:
+            type: string
+        - name: category
+          in: query
+          description: Book category to search for
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Number of items per page.
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          description: The starting point for pagination (skip the first N items).
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        200:
+          description: List of matching books
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count:
+                    type: integer
+                    description: The total number of books matching the search criteria.
+                  limit:
+                    type: integer
+                    description: Number of items per page.
+                  offset:
+                    type: integer
+                    description: The offset used for the pagination.
+                  books:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Book'
+              example:
+                total_count: 50
+                limit: 10
+                offset: 0
+                books:
+                  - book_id: 1
+                    title: "Foundation"
+                    author: "Isaac Asimov"
+                    category: "Science Fiction"
+                    status: "Available"
+                  - book_id: 2
+                    title: "1984"
+                    author: "George Orwell"
+                    category: "Dystopian"
+                    status: "Checked Out"
+        400:
+          description: Invalid request parameters (e.g., invalid limit or offset).
+
+  /borrow:
+    post:
+      summary: Borrow a book
+      tags: [book]
+      security:
+        - BearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Borrowing'
+      responses:
+        201:
+          description: Book successfully borrowed
+        400:
+          $ref: '#/components/responses/BadRequestError'
+        401:
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /borrowings/{borrowId}:
+    put:
+      summary: Return a borrowed book before the due date
+      tags: [book]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: borrowId
+          in: path
+          required: true
+          description: ID of the borrowing record to return
+          schema:
+            type: integer
+      responses:
+        200:
+          description: Book successfully returned
+        400:
+          $ref: '#/components/responses/BadRequestError'
+        401:
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /fines/{userId}:
+    get:
+      summary: View fines for a user
+      tags: [fine]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: ID of the user to view fines for
+          schema:
+            type: integer
+      responses:
+        200:
+          description: List of fines for the user
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Fine'
+
+  /fines/pay/{fineId}:
+    post:
+      summary: Pay a fine
+      tags: [fine]
+      parameters:
+        - name: fineId
+          in: path
+          required: true
+          description: ID of the fine to pay
+          schema:
+            type: integer
+      responses:
+        200:
+          description: Fine successfully paid
+        400:
+          $ref: '#/components/responses/BadRequestError'
+        404:
+          $ref: '#/components/responses/NotFoundError'
+components:
+  
+  responses:
+    UnauthorizedError:
+      description: Access token is missing or invalid
+    NotFoundError:
+      description: Requested resource was not found
+    BadRequestError:
+      description: Invalid request parameters
+   
+  schemas:
+   
+    User:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+          example: 1001
+        username:
+          type: string
+          example: "John Doe"  
+        name:
+          type: string
+          example: "John Doe"
+        email:
+          type: string
+          format: email
+          example: "johndoe@example.com"
+        password_hash:
+          type: string
+          example: "$2a$12$abcdefg12345678hijklmnopqrstuv"
+        role:
+          type: string
+          description: User role
+          enum:
+            - Librarian
+            - Member
+          example: "Librarian"
+
+    Category:
+      type: object
+      properties:
+        category_id:
+          type: integer
+          format: int64
+          example: 200
+        name:
+          type: string
+          example: "Science Fiction"
+        description:
+          type: string
+          example: "Books related to futuristic and scientific concepts."
+
+    Author:
+      type: object
+      properties:
+        author_id:
+          type: integer
+          format: int64
+          example: 3001
+        name:
+          type: string
+          example: "Isaac Asimov"
+        biography:
+          type: string
+          example: "Isaac Asimov was a prolific science fiction writer and professor of biochemistry."
+        date_of_birth:
+          type: string
+          format: date
+          example: "1920-01-02"
+
+    Book:
+      type: object
+      properties:
+        book_id:
+          type: integer
+          format: int64
+          example: 50001
+        title:
+          type: string
+          example: "Foundation"
+        isbn:
+          type: string
+          example: "978-0-553-80371-0"
+        status:
+          type: string
+          description: Book availability status
+          enum:
+            - Available
+            - Borrowed
+            - Reserved
+          example: "Available"
+        category:
+          $ref: '#/components/schemas/Category'
+        authors:
+          type: array
+          xml:
+            name: authors
+            wrapped: true
+          items:
+            $ref: '#/components/schemas/Author'  
+
+    Borrowing:
+      type: object
+      properties:
+        borrow_id:
+          type: integer
+          format: int64
+          example: 7001
+        user_id:
+          type: integer
+          format: int64
+          example: 1001
+        book_id:
+          type: integer
+          format: int64
+          example: 50001
+        borrow_date:
+          type: string
+          format: date-time
+          example: "2025-03-10T14:00:00Z"
+        due_date:
+          type: string
+          format: date-time
+          example: "2025-03-24T14:00:00Z"
+        return_date:
+          type: string
+          format: date-time
+          example: "2025-03-22T10:30:00Z"
+          nullable: true
+    Fine:
+      type: object
+      properties:
+        fine_id:
+          type: integer
+          format: int64
+          example: 11001
+        user_id:
+          type: integer
+          format: int64
+          example: 1001
+        amount:
+          type: number
+          format: float
+          example: 5.00
+        status:
+          type: string
+          description: Fine payment status
+          enum:
+            - Unpaid
+            - Paid
+          example: "Unpaid"
+        payment_date:
+          type: string
+          format: date-time
+          example: "2025-03-25T15:00:00Z"
+          nullable: true
+  requestBodies:
+    UserArray:
+      description: List of user object
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/User'
+ 
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT          
+    api_key:
+      type: apiKey
+      name: api_key
+      in: header
